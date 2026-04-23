@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>배관섹션 부재현황 v1.2</title>
+    <style>
+        :root { --posco-blue: #004b91; --bg: #f4f7fa; }
+        body { font-family: 'Pretendard', sans-serif; background-color: var(--bg); margin: 0; padding-bottom: 60px; }
+        header { background-color: var(--posco-blue); color: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 1001; }
+        
+        .section-container { max-width: 1600px; margin: 20px auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        
+        .input-box { background: #f8f9fa; border: 1px solid #e9ecef; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: center; }
+        .input-box select, .input-box input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
+        .add-btn { background: var(--posco-blue); color: white; padding: 8px 20px; border: none; cursor: pointer; border-radius: 4px; font-weight: bold; }
+
+        .status-board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+        .status-item { background: #fffbe6; border: 1px solid #ffe58f; padding: 10px; border-radius: 6px; font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; }
+        .status-title { grid-column: span 4; font-weight: 800; color: #856404; font-size: 1rem; margin-bottom: 5px; border-bottom: 2px solid #ffe58f; padding-bottom: 5px; }
+
+        .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: #ddd; border: 1px solid #ddd; }
+        .cal-cell { background: white; min-height: 100px; padding: 8px; box-sizing: border-box; }
+        .cal-cell b { font-size: 0.8rem; margin-bottom: 6px; display: inline-block; }
+        .cal-event { padding: 2px 5px; border-radius: 3px; margin-top: 2px; color: white; font-size: 0.7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div style="font-weight: 900;">POSCO E&C <span style="font-weight: 300;">배관섹션 부재현황 v1.2</span></div>
+    <div id="clock" style="font-size: 0.8rem;"></div>
+</header>
+
+<div class="section-container">
+    <div class="input-box">
+        <b>부재 등록:</b>
+        <select id="user-name"></select>
+        <select id="leave-type"></select>
+        <input type="date" id="start-date"> ~ <input type="date" id="end-date">
+        <button class="add-btn" onclick="addLeave()">등록하기</button>
+    </div>
+
+    <div class="status-board" id="status-board">
+        <div class="status-title">🚩 이번 주 부재자 현황</div>
+    </div>
+
+    <div class="cal-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <button onclick="changeMonth(-1)">◀</button>
+        <b id="cal-month-title" style="font-size:1.2rem;"></b>
+        <button onclick="changeMonth(1)">▶</button>
+    </div>
+    <div class="cal-grid" id="cal-grid"></div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getDatabase, ref, onValue, push, remove } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+    const firebaseConfig = {
+        apiKey: "AIzaSyC8KlvV_-8d1BduBbGt9tlbNHLcrf5Pgok",
+        authDomain: "utility-and-piping.firebaseapp.com",
+        projectId: "utility-and-piping",
+        databaseURL: "https://utility-and-piping-default-rtdb.asia-southeast1.firebasedatabase.app"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const leaveRef = ref(db, 'piping_leaves');
+
+    const members = ["박재범", "지상철", "이범열", "최진욱", "김정철", "조래혁", "최현호", "김광진", "배성우", "김창훈", "이기원", "김태영", "남원희", "박동윤", "김형진", "박재영", "신철근", "정성욱", "이민원", "이성진", "이용진", "임락현", "김효민", "심우혁"];
+    const leaveTypes = ["연차휴가", "반차", "반반차", "회의", "사내교육", "사외교육", "출장(송도)", "출장(국내)", "출장(해외)"];
+    const colors = ["#e74c3c", "#f39c12", "#27ae60", "#2980b9", "#8e44ad", "#16a085", "#2c3e50", "#d35400", "#c0392b"];
+
+    let leaves = [];
+    let curDate = new Date();
+
+    window.onload = () => {
+        const nameSel = document.getElementById('user-name');
+        members.forEach(m => nameSel.add(new Option(m, m)));
+        const typeSel = document.getElementById('leave-type');
+        leaveTypes.forEach(t => typeSel.add(new Option(t, t)));
+
+        typeSel.addEventListener('change', handleDateSync);
+        document.getElementById('start-date').addEventListener('change', handleDateSync);
+
+        onValue(leaveRef, (snap) => {
+            const data = snap.val();
+            leaves = data ? Object.keys(data).map(k => ({ id: k, ...data[k] })) : [];
+            refreshUI();
+        });
+    };
+
+    function handleDateSync() {
+        const type = document.getElementById('leave-type').value;
+        const start = document.getElementById('start-date');
+        const end = document.getElementById('end-date');
+        
+        // 연차휴가, 반차, 반반차 선택 시 종료 날짜를 시작 날짜와 동기화하고 잠금
+        if (type === '연차휴가' || type === '반차' || type === '반반차') {
+            end.value = start.value;
+            end.readOnly = true;
+            end.style.backgroundColor = "#e9ecef";
+        } else {
+            end.readOnly = false;
+            end.style.backgroundColor = "#ffffff";
+        }
+    }
+
+    window.addLeave = () => {
+        const name = document.getElementById('user-name').value;
+        const type = document.getElementById('leave-type').value;
+        const start = document.getElementById('start-date').value;
+        const end = document.getElementById('end-date').value;
+        if(!start || !end) return alert("날짜를 선택해주세요.");
+        push(leaveRef, { name, type, start, end });
+        
+        document.getElementById('start-date').value = "";
+        document.getElementById('end-date').value = "";
+        document.getElementById('end-date').readOnly = false;
+        document.getElementById('end-date').style.backgroundColor = "#ffffff";
+    };
+
+    function refreshUI() {
+        const board = document.getElementById('status-board');
+        board.innerHTML = '<div class="status-title">🚩 이번 주 부재자 현황</div>';
+        const now = new Date();
+        const mon = new Date(now.setDate(now.getDate() - now.getDay() + 1)).setHours(0,0,0,0);
+        const sun = new Date(now.setDate(now.getDate() - now.getDay() + 7)).setHours(23,59,59,999);
+
+        leaves.filter(l => {
+            const s = new Date(l.start); const e = new Date(l.end);
+            return (s <= sun && e >= mon);
+        }).forEach(l => {
+            board.innerHTML += `
+                <div class="status-item">
+                    <span><b>${l.name}</b> (${l.type})</span>
+                    <span style="font-size:0.7rem; color:#666;">${l.start.slice(5)}~${l.end.slice(5)} <button onclick="delLeave('${l.id}')" style="border:none; background:none; cursor:pointer; color:red;">×</button></span>
+                </div>`;
+        });
+        renderCalendar();
+    }
+
+    window.delLeave = (id) => confirm("삭제하시겠습니까?") && remove(ref(db, `piping_leaves/${id}`));
+
+    function renderCalendar() {
+        const grid = document.getElementById('cal-grid'); grid.innerHTML = "";
+        ["일","월","화","수","목","금","토"].forEach(d => grid.innerHTML += `<div style="text-align:center; padding:5px; font-weight:bold; background:#eee; font-size:0.8rem;">${d}</div>`);
+        const y = curDate.getFullYear(), m = curDate.getMonth();
+        document.getElementById('cal-month-title').innerText = `${y}년 ${m+1}월`;
+        const fDay = new Date(y, m, 1).getDay(), lDate = new Date(y, m+1, 0).getDate();
+        for(let i=0; i<fDay; i++) grid.innerHTML += `<div class="cal-cell"></div>`;
+        for(let d=1; d<=lDate; d++) {
+            const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+            let html = `<div class="cal-cell"><b>${d}</b>`;
+            leaves.filter(l => dateStr >= l.start && dateStr <= l.end).forEach(l => {
+                const color = colors[leaveTypes.indexOf(l.type)] || "#555";
+                html += `<div class="cal-event" style="background:${color}" title="${l.name}(${l.type})">${l.name}(${l.type})</div>`;
+            });
+            html += `</div>`;
+            grid.innerHTML += html;
+        }
+    }
+
+    window.changeMonth = (v) => { curDate.setMonth(curDate.getMonth() + v); refreshUI(); };
+    setInterval(() => document.getElementById('clock').innerText = new Date().toLocaleString(), 1000);
+</script>
+</body>
+</html>
